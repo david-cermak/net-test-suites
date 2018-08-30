@@ -12,9 +12,13 @@
  *
  */
 
+
+//
+// Note: this is a test code for tweaking checksum calculation, etc...
+//
+
 #include <sys/socket.h>
 
-#include <netinet/ether.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/ip6.h>
@@ -28,116 +32,27 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "port_data.hh"
 
-namespace port__data__types {
+#define ETH_ALEN	6				/* Octets in one ethernet addr	 */
+#define ETH_HLEN	14				/* Total octets in header.	 */
+#define ETH_ZLEN	60				/* Min. octets in frame sans FCS */
+#define ETH_DATA_LEN	1500		/* Max. octets in payload	 */
+#define ETH_FRAME_LEN	1514		/* Max. octets in frame sans FCS */
+#define ETH_FCS_LEN	4				/* Octets in the FCS		 */
 
-#define E(fmt, args...)							\
-do {									\
-	TTCN_error("%s:%s() Error: " fmt "(): %s",			\
-		__FILE__, __func__, ## args, strerror(errno));		\
-} while (0)
+#define ETHERTYPE_IP 0x0800
+#define ETHERTYPE_ARP 0x0806
+#define ETHERTYPE_VLAN 0x8100
+#define ETHERTYPE_IPV6 0x8600
 
-#define _E(fmt, args...)						\
-do {									\
-	TTCN_error("%s:%s() Error: " fmt ,				\
-		__FILE__, __func__, ## args);				\
-} while (0)
 
-port__data_PROVIDER::port__data_PROVIDER(const char *name) : PORT(name)
-{
-	src_ip = dst_ip = inet_addr("127.0.0.1");
-	src_port = 7777;
-	dst_port = 7771;
-}
+struct ethhdr {
+	unsigned char	h_dest[ETH_ALEN];	/* destination eth addr	*/
+	unsigned char	h_source[ETH_ALEN];	/* source ether addr	*/
+	uint16_t		h_proto;			/* packet type ID field	*/
+};
 
-#define IS_PARAM(_param, _name) (strcmp(_param, _name) == 0)
 
-void port__data_PROVIDER::set_parameter(const char *name, const char *value)
-{
-	if (IS_PARAM("src_ip", name)) {
-		dst_port = inet_addr(value);
-		goto out;
-	}
-
-	if (IS_PARAM("src_port", name)) {
-		src_port = atoi(value);
-		goto out;
-	}
-
-	if (IS_PARAM("dst_ip", name)) {
-		dst_ip = inet_addr(value);
-		goto out;
-	}
-
-	if (IS_PARAM("dst_port", name)) {
-		dst_port = atoi(value);
-		goto out;
-	}
-
-	E("Unsupported parameter: %s", name);
- out:
-	return;
-}
-
-void port__data_PROVIDER::Handle_Fd_Event_Readable(int fd)
-{
-	ssize_t bytes_read = read(fd, buf, sizeof(buf));
-
-	if (bytes_read < 0) {
-		E("recvfrom");
-		return;
-	}
-
-	incoming_message(OCTETSTRING(bytes_read, buf));
-}
-
-void port__data_PROVIDER::Event_Handler(const fd_set *fds_read,
-			     const fd_set */*write_fds*/,
-			     const fd_set */*error_fds*/,
-			     double /*time_since_last_call*/)
-{
-	if (FD_ISSET(fd, fds_read))
-		Handle_Fd_Event_Readable(fd);
-}
-
-#define S_IN_SIZE sizeof(struct sockaddr_in)
-
-const sockaddr *s_in(uint32_t ip, uint16_t port)
-{
-	static struct sockaddr_in sin;
-
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = ip;
-	sin.sin_port = htons(port);
-
-	return (const sockaddr *) &sin;
-}
-
-void port__data_PROVIDER::user_map(const char * /*system_port*/)
-{
-	fd_set fds_read;
-
-	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
-		E("socket");
-
-	if (bind(fd, s_in(src_ip, src_port), S_IN_SIZE) == -1)
-		E("bind");
-
-	if (connect(fd, s_in(dst_ip, dst_port), S_IN_SIZE) == -1)
-		E("connect");
-
-	FD_ZERO(&fds_read);
-	FD_SET(fd, &fds_read);
-
-	Install_Handler(&fds_read, NULL, NULL, 0);
-}
-
-void port__data_PROVIDER::user_unmap(const char * /*system_port*/)
-{
-	Uninstall_Handler();
-	close(fd);
-}
 
 int32_t _cs(void *data, size_t data_len)
 {
@@ -192,7 +107,7 @@ uint16_t inet6_chksum(uint8_t *data, size_t data_len)
 	case ETHERTYPE_ARP:
 		goto end;
 	default:
-		_E("Unsupported ETHERTYPE: 0x%04hx (%hu)", h_proto, h_proto);
+		printf("Unsupported ETHERTYPE: 0x%04hx (%hu)", h_proto, h_proto);
 	}
 
 	switch (*ipproto) {
@@ -216,13 +131,10 @@ uint16_t inet6_chksum(uint8_t *data, size_t data_len)
 		icmp = (struct icmp *) (ip + 1);
 		sum = &icmp->icmp_cksum;
 		if (!(*sum)) {
-			/* Update ICMP checksum here, so it's non-null and further calculation will be skipped */
-			int32_t s = 0;
-
 			if (h_proto == ETHERTYPE_IP) {
 				ip->ip_sum = cs(_cs(ip, sizeof(struct ip)));
-			}
-
+			}			
+			int32_t s = 0;
 			s += _cs(data + 14, data_len - 14);
 			s = cs(s);
 			*sum = s;
@@ -233,7 +145,7 @@ uint16_t inet6_chksum(uint8_t *data, size_t data_len)
 		sum = &icmp6->icmp6_cksum;
 		break;
 	default:
-		_E("Unsupported IPPROTO: 0x%04hx (%hu)", ip6->ip6_nxt,
+		printf("Unsupported IPPROTO: 0x%04hx (%hu)", ip6->ip6_nxt,
 		   ip6->ip6_nxt);
 	}
 
@@ -244,7 +156,8 @@ uint16_t inet6_chksum(uint8_t *data, size_t data_len)
 	int32_t s;
 
 	if (h_proto == ETHERTYPE_IP) {
-		s = _cs(&ip->ip_src, sizeof(struct in_addr) * 2);
+		s = _cs(&ip->ip_src, sizeof(struct in_addr)) * 2;
+		// s = _cs(&ip->ip_src, 4 * 2);
 	} else {
 		s = _cs(&ip6->ip6_src, sizeof(struct in6_addr) * 2);
 	}
@@ -276,16 +189,40 @@ uint16_t inet6_chksum(uint8_t *data, size_t data_len)
 	return s;
 }
 
-void port__data_PROVIDER::outgoing_send(const OCTETSTRING& msg)
+void my_send(char* msg, int data_len)
 {
-	ssize_t data_len = msg.lengthof();
-
+	unsigned char buf[100];
 	memcpy(buf, msg, data_len);
 
 	inet6_chksum(buf, data_len);
 
-	if (write(fd, buf, data_len) < data_len)
-		E("write");
+	
+	int i;
+	for (i=0; i<data_len; i++) {
+		printf("0x%02x ", buf[i]);
+	}
+	printf("\n");
+
 }
 
-} /* end of namespace */
+char data[100] = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x08, 0x00, 0x45, 0x00, 0x00, 
+    // 0x1c, 0x00, 0x00, 0x00, 0x00, 0xff, 0x01, 0xa7, 0xde, 0x0a, 0x00, 0x00, 0x02, 0x0a, 0x00, 0x00, 0x01, 0x08, 0x00, 0x0, 0x00, 0x00, 0x01, 0x00, 0x01
+       0x1c, 0x00, 0x00, 0x00, 0x00, 0xff, 0x01, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x02, 0x0a, 0x00, 0x00, 0x01, 0x08, 0x00, 0x0, 0x00, 0x00, 0x01, 0x00, 0x01
+// 0x30, 0xae, 0xa4, 0x80, 0x47, 0x75, 0xdc, 0xa9, 0x04, 0x99, 0xf3, 0x82, 0x08, 0x00, 0x45, 0x00, 0x00, 
+// 0x1c, 0x00, 0x00, 0x00, 0x00, 0xff, 0x01, 0x32, 0x8d, 0xc0, 0xa8, 0x04, 0x02, 0xc0, 0xa8, 0x04, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01    
+};
+
+int main()
+{
+	uint16_t *ptr  = (uint16_t *)(data+14);
+	uint32_t s = 0;
+	for (int i= 0; i<(42-14)/2; i++) {
+		s += *ptr++;
+	}
+	s = cs(s);
+	printf("%0x\n",s);
+
+	my_send(data, 42);
+	return 0;
+}
